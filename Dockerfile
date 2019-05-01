@@ -1,9 +1,12 @@
-FROM golang
+FROM golang 
+ 
+RUN go get -u github.com/golang/dep/cmd/dep 
+ 
+WORKDIR /go/src/github.com/Catofes/Fdns 
+COPY Gopkg.toml Gopkg.lock ./ 
+RUN dep ensure --vendor-only 
+ 
+COPY . ./ 
+RUN make 
 
-WORKDIR /go/src/app
-COPY . .
-
-RUN go get -d -v ./...
-RUN go install -v ./...                                                                                                                                                                              
-
-CMD ["app", "-c", "config.json"]                                                                                                                                                                     
+CMD ["build/dns", "-c", "config.json"]
