@@ -1,0 +1,7 @@
+{
+	"ListenAddress": "127.0.0.1:53",
+		"ChinaParents": ["114.114.114.114:53"],
+		"OutSeaParents": ["101.6.6.6:53"],
+		"IpDatabase": "./ipipfree.ipdb",
+		"Debug": true
+}

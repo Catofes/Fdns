@@ -1,0 +1,218 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"github.com/ipipdotnet/ipdb-go"
+	"github.com/miekg/dns"
+	"github.com/pkg/errors"
+	"io/ioutil"
+	"log"
+	"time"
+)
+
+var (
+	FromChina  = 0
+	FromOutSea = 1
+)
+
+type config struct {
+	ListenAddress      string
+	ChinaParents       []string
+	OutSeaParents      []string
+	Timeout            int
+	ChinaTimeoutOffset int
+	IPDatabase         string
+	Debug              bool
+	c                  *dns.Client
+	s                  *dns.Server
+	db                 *ipdb.City
+}
+
+func (s *config) Init(path string) {
+	f, err := ioutil.ReadFile(path)
+	if err != nil {
+		log.Fatal("Read config failed: ", err)
+	}
+	err = json.Unmarshal(f, s)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(s.ChinaParents) == 0 || len(s.OutSeaParents) == 0 {
+		log.Fatal("China and OutSea Parents missed.")
+	}
+	if s.Timeout == 0 {
+		s.Timeout = 5000
+	}
+	if s.ChinaTimeoutOffset == 0 {
+		s.ChinaTimeoutOffset = 300
+	}
+	s.c = new(dns.Client)
+	s.s = new(dns.Server)
+	s.db, err = ipdb.NewCity(s.IPDatabase)
+	if err != nil {
+		log.Fatal("Read IP Database failed: ", err)
+	}
+}
+
+func (s *config) LookupOnce(ctx context.Context, m *dns.Msg, a string, r chan *dns.Msg) {
+	reply, _, err := s.c.ExchangeContext(ctx, m, a)
+	if err != nil {
+		log.Printf("{%s} Parents failed: %s.\n", a, err)
+		return
+	}
+	r <- reply
+}
+
+func (s *config) LookupMulti(ctx context.Context, m *dns.Msg, a *[]string) (r *dns.Msg, err error) {
+	answer := make(chan *dns.Msg)
+	c, cancel := context.WithTimeout(ctx, time.Duration(s.Timeout)*time.Millisecond)
+	defer cancel()
+	for _, v := range *a {
+		go s.LookupOnce(c, m, v, answer)
+	}
+	select {
+	case r = <-answer:
+		return
+	case <-c.Done():
+		return nil, errors.New("Timeout")
+	}
+}
+
+func (s *config) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	if r == nil {
+		return
+	}
+	if len(r.Question) <= 0 {
+		return
+	}
+	c, cancel := context.WithTimeout(context.Background(), 2*time.Duration(s.Timeout)*time.Millisecond)
+	defer cancel()
+
+	type answer struct {
+		*dns.Msg
+		from int
+	}
+
+	answerChan := make(chan *answer, 2)
+	go func() {
+		a, err := s.LookupMulti(c, r, &(s.ChinaParents))
+		if err != nil {
+			log.Printf("[%s] China Failed: %s.\n", r.Question[0].String(), err)
+			return
+		}
+		answerChan <- &answer{a, FromChina}
+	}()
+	go func() {
+		a, err := s.LookupMulti(context.Background(), r, &(s.OutSeaParents))
+		if err != nil {
+			log.Printf("[%s] OutSea Failed: %s.\n", r.Question[0].String(), err)
+			return
+		}
+		answerChan <- &answer{a, FromOutSea}
+	}()
+
+	returnNow := func(a *answer, r *dns.Msg) (bool, error) {
+		if len(a.Answer) > 1 || len(a.Answer) <= 0 {
+			return true, nil
+		} else {
+			a := a.Answer[0]
+			if a.Header().Rrtype != dns.TypeA {
+				return true, nil
+			}
+			A, e := a.(*dns.A)
+			if e != true {
+				return false, errors.New("Type assert failed")
+			}
+			cityInfo, err := s.db.FindInfo(A.A.String(), "CN")
+			if err != nil {
+				return false, errors.New("Ip Database failed")
+			}
+			if s.Debug {
+				log.Printf("[%s] Results below to (%s).\n", r.Question[0].String(), cityInfo.CountryName)
+			}
+			if cityInfo.CountryName == "中国" {
+				return true, nil
+			} else {
+				return false, nil
+			}
+		}
+	}
+
+	select {
+	case a := <-answerChan:
+		if a.from == FromChina {
+			f, err := returnNow(a, r)
+			if err != nil {
+				log.Printf("[%s] Judge Failed: %s.\n", r.Question[0].String(), err)
+				return
+			}
+			if f {
+				err := w.WriteMsg(a.Msg)
+				if err != nil {
+					log.Printf("[%s] Return Failed: %s.\n", r.Question[0].String(), err)
+				}
+				return
+			} else {
+				select {
+				case a := <-answerChan:
+					err := w.WriteMsg(a.Msg)
+					if err != nil {
+						log.Printf("[%s] Return Failed: %s.\n", r.Question[0].String(), err)
+					}
+					return
+				case <-c.Done():
+					return
+				}
+			}
+		} else {
+			c, cancel := context.WithTimeout(context.Background(), time.Duration(s.ChinaTimeoutOffset)*time.Millisecond)
+			defer cancel()
+			select {
+			case b := <-answerChan:
+				f, err := returnNow(b, r)
+				if err != nil {
+					log.Printf("[%s] Judge Failed: %s.\n", r.Question[0].String(), err)
+					return
+				}
+				if f {
+					err := w.WriteMsg(b.Msg)
+					if err != nil {
+						log.Printf("[%s] Return Failed: %s.\n", r.Question[0].String(), err)
+					}
+					return
+				} else {
+					err := w.WriteMsg(a.Msg)
+					if err != nil {
+						log.Printf("[%s] Return Failed: %s.\n", r.Question[0].String(), err)
+					}
+					return
+				}
+			case <-c.Done():
+				return
+			}
+		}
+	case <-c.Done():
+		return
+	}
+}
+
+func (s *config) Run() {
+	s.s.Addr = s.ListenAddress
+	s.s.Net = "udp"
+	s.s.ReusePort = true
+	s.s.Handler = s
+	err := s.s.ListenAndServe()
+	if err != nil {
+		log.Fatal("Server DNS Failed: ", err)
+	}
+}
+
+func main() {
+	c := flag.String("c", "", "Config file path.")
+	flag.Parse()
+	app := config{}
+	app.Init(*c)
+	app.Run()
+}
