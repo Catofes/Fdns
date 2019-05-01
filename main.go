@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"github.com/ipipdotnet/ipdb-go"
 	"github.com/miekg/dns"
 	"github.com/pkg/errors"
+	"github.com/yl2chen/cidranger"
 	"io/ioutil"
 	"log"
+	"net"
+	"strings"
 	"time"
 )
 
@@ -27,7 +29,7 @@ type config struct {
 	Debug              bool
 	c                  *dns.Client
 	s                  *dns.Server
-	db                 *ipdb.City
+	db                 cidranger.Ranger
 }
 
 func (s *config) Init(path string) {
@@ -50,9 +52,27 @@ func (s *config) Init(path string) {
 	}
 	s.c = new(dns.Client)
 	s.s = new(dns.Server)
-	s.db, err = ipdb.NewCity(s.IPDatabase)
+	s.db = cidranger.NewPCTrieRanger()
+	f, err = ioutil.ReadFile(s.IPDatabase)
 	if err != nil {
-		log.Fatal("Read IP Database failed: ", err)
+		log.Fatal("Read IP Database error.")
+	}
+	ranges := strings.Split(string(f), "\n")
+	for _, r := range ranges {
+		if len(r) <= 1 {
+			return
+		}
+		if r[0] == '#' {
+			continue
+		}
+		_, network, err := net.ParseCIDR(r)
+		if err != nil {
+			log.Fatal("CIDR Parse failed.", err)
+		}
+		err = s.db.Insert(cidranger.NewBasicRangerEntry(*network))
+		if err != nil {
+			log.Fatal("CIDR Parse failed.", err)
+		}
 	}
 }
 
@@ -125,16 +145,20 @@ func (s *config) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			if e != true {
 				return false, errors.New("Type assert failed")
 			}
-			cityInfo, err := s.db.FindInfo(A.A.String(), "CN")
+			contains, err := s.db.Contains(A.A)
 			if err != nil {
-				return false, errors.New("Ip Database failed")
+				return false, errors.New("Ip Address judge failed")
 			}
-			if s.Debug {
-				log.Printf("[%s] Results below to (%s).\n", r.Question[0].String(), cityInfo.CountryName)
-			}
-			if cityInfo.CountryName == "中国" {
+
+			if contains {
+				if s.Debug {
+					log.Printf("[%s] Results below to china.\n", r.Question[0].String())
+				}
 				return true, nil
 			} else {
+				if s.Debug {
+					log.Printf("[%s] Results not below to china.\n", r.Question[0].String())
+				}
 				return false, nil
 			}
 		}

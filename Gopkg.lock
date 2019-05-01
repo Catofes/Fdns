@@ -2,14 +2,6 @@
 
 
 [[projects]]
-  digest = "1:de9b7d1f843ca2b969a50c8f82c559c727d56d236181c3e1900cdd8b21612af0"
-  name = "github.com/ipipdotnet/ipdb-go"
-  packages = ["."]
-  pruneopts = "UT"
-  revision = "1b1ca88d8d9125780fc39fdeda5cea2fc7b40459"
-  version = "v1.2.0"
-
-[[projects]]
   digest = "1:2b4b4b2e5544c2a11a486c1b631357aa2ddf766e50c1b2483cf809da2c511234"
   name = "github.com/miekg/dns"
   packages = ["."]
@@ -24,6 +16,17 @@
   pruneopts = "UT"
   revision = "ba968bfe8b2f7e042a574c888954fccecfa385b4"
   version = "v0.8.1"
+
+[[projects]]
+  branch = "master"
+  digest = "1:cd2cbc2f6693543f47cc53e2b2f9be229f017f6604322d1f0b7306b009059243"
+  name = "github.com/yl2chen/cidranger"
+  packages = [
+    ".",
+    "net",
+  ]
+  pruneopts = "UT"
+  revision = "928b519e5268fe386d0f7decce320205cc09ca95"
 
 [[projects]]
   branch = "master"
@@ -62,9 +65,9 @@
   analyzer-name = "dep"
   analyzer-version = 1
   input-imports = [
-    "github.com/ipipdotnet/ipdb-go",
     "github.com/miekg/dns",
     "github.com/pkg/errors",
+    "github.com/yl2chen/cidranger",
   ]
   solver-name = "gps-cdcl"
   solver-version = 1
