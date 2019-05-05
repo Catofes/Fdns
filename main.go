@@ -82,12 +82,14 @@ func (s *config) LookupOnce(ctx context.Context, m *dns.Msg, a string, r chan *d
 		log.Printf("{%s} Parents failed: %s.\n", a, err)
 		return
 	}
-	r <- reply
+	select {
+	case r <- reply:
+	case <-ctx.Done():
+	}
 }
 
 func (s *config) LookupMulti(ctx context.Context, m *dns.Msg, a *[]string) (r *dns.Msg, err error) {
 	answer := make(chan *dns.Msg)
-	defer close(answer)
 	c, cancel := context.WithTimeout(ctx, time.Duration(s.Timeout)*time.Millisecond)
 	defer cancel()
 	for _, v := range *a {
@@ -116,25 +118,30 @@ func (s *config) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		from int
 	}
 
-	answerChan := make(chan *answer, 2)
-	defer close(answerChan)
+	answerChan := make(chan *answer)
 
-	go func() {
+	go func(c context.Context) {
 		a, err := s.LookupMulti(c, r, &(s.ChinaParents))
 		if err != nil {
 			log.Printf("[%s] China Failed: %s.\n", r.Question[0].String(), err)
 			return
 		}
-		answerChan <- &answer{a, FromChina}
-	}()
-	go func() {
+		select {
+		case answerChan <- &answer{a, FromChina}:
+		case <-c.Done():
+		}
+	}(c)
+	go func(c context.Context) {
 		a, err := s.LookupMulti(context.Background(), r, &(s.OutSeaParents))
 		if err != nil {
 			log.Printf("[%s] OutSea Failed: %s.\n", r.Question[0].String(), err)
 			return
 		}
-		answerChan <- &answer{a, FromOutSea}
-	}()
+		select {
+		case answerChan <- &answer{a, FromOutSea}:
+		case <-c.Done():
+		}
+	}(c)
 
 	returnNow := func(a *answer, r *dns.Msg) (bool, error) {
 		if len(a.Answer) > 1 || len(a.Answer) <= 0 {
