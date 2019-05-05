@@ -87,6 +87,7 @@ func (s *config) LookupOnce(ctx context.Context, m *dns.Msg, a string, r chan *d
 
 func (s *config) LookupMulti(ctx context.Context, m *dns.Msg, a *[]string) (r *dns.Msg, err error) {
 	answer := make(chan *dns.Msg)
+	defer close(answer)
 	c, cancel := context.WithTimeout(ctx, time.Duration(s.Timeout)*time.Millisecond)
 	defer cancel()
 	for _, v := range *a {
@@ -116,6 +117,8 @@ func (s *config) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 
 	answerChan := make(chan *answer, 2)
+	defer close(answerChan)
+
 	go func() {
 		a, err := s.LookupMulti(c, r, &(s.ChinaParents))
 		if err != nil {
