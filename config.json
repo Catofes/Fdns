@@ -3,5 +3,6 @@
 		"ChinaParents": ["114.114.114.114:53"],
 		"OutSeaParents": ["101.6.6.6:53"],
 		"IpDatabase": "./chnroutes.txt",
-		"Debug": true
+		"Debug": true,
+		"Prefix": "2001:da8:201:1347:e:ffff:"
 }
