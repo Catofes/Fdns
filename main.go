@@ -144,33 +144,37 @@ func (s *config) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}(c)
 
 	returnNow := func(a *answer, r *dns.Msg) (bool, error) {
-		if len(a.Answer) > 1 || len(a.Answer) <= 0 {
+		AAnswer := make([]dns.RR, 0)
+		for _, v := range a.Answer {
+			if v.Header().Rrtype == dns.TypeA {
+				AAnswer = append(AAnswer, v)
+			}
+		}
+		if len(AAnswer) > 1 || len(AAnswer) <= 0 {
+			return true, nil
+		}
+		t := AAnswer[0]
+		if t.Header().Rrtype != dns.TypeA {
+			return true, nil
+		}
+		A, e := t.(*dns.A)
+		if e != true {
+			return false, errors.New("Type assert failed")
+		}
+		contains, err := s.db.Contains(A.A)
+		if err != nil {
+			return false, errors.New("Ip Address judge failed")
+		}
+		if contains {
+			if s.Debug {
+				log.Printf("[%s] Results below to china.\n", r.Question[0].String())
+			}
 			return true, nil
 		} else {
-			a := a.Answer[0]
-			if a.Header().Rrtype != dns.TypeA {
-				return true, nil
+			if s.Debug {
+				log.Printf("[%s] Results not below to china.\n", r.Question[0].String())
 			}
-			A, e := a.(*dns.A)
-			if e != true {
-				return false, errors.New("Type assert failed")
-			}
-			contains, err := s.db.Contains(A.A)
-			if err != nil {
-				return false, errors.New("Ip Address judge failed")
-			}
-
-			if contains {
-				if s.Debug {
-					log.Printf("[%s] Results below to china.\n", r.Question[0].String())
-				}
-				return true, nil
-			} else {
-				if s.Debug {
-					log.Printf("[%s] Results not below to china.\n", r.Question[0].String())
-				}
-				return false, nil
-			}
+			return false, nil
 		}
 	}
 
