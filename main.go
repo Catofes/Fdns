@@ -22,15 +22,17 @@ var (
 
 type config struct {
 	ListenAddress      string
+	TcpListenAddress   string
 	ChinaParents       []string
 	OutSeaParents      []string
 	Timeout            int
 	Prefix             string
+	CertPath           string
+	KeyPath            string
 	ChinaTimeoutOffset int
 	IPDatabase         string
 	Debug              bool
 	c                  *dns.Client
-	tcpServer          *dns.Server
 	udpServer          *dns.Server
 	db                 cidranger.Ranger
 }
@@ -53,12 +55,11 @@ func (s *config) Init(path string) {
 	if s.ChinaTimeoutOffset == 0 {
 		s.ChinaTimeoutOffset = 300
 	}
-	if s.Prefix == ""{
+	if s.Prefix == "" {
 		log.Fatal("Prefix must be 2001:xxx:xxx:xxx:xxx:xxx:")
 	}
 	s.c = new(dns.Client)
 	s.udpServer = new(dns.Server)
-	s.tcpServer = new(dns.Server)
 	s.db = cidranger.NewPCTrieRanger()
 	f, err = ioutil.ReadFile(s.IPDatabase)
 	if err != nil {
@@ -117,6 +118,18 @@ func (s *config) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	if len(r.Question) <= 0 {
 		return
 	}
+
+	AFlag := false
+	AAAAFlag := false
+
+	if r.Question[0].Qtype == dns.TypeA {
+		AFlag = true
+	}
+	if r.Question[0].Qtype == dns.TypeAAAA {
+		r.Question[0].Qtype = dns.TypeA
+		AAAAFlag = true
+	}
+
 	c, cancel := context.WithTimeout(context.Background(), 2*time.Duration(s.Timeout)*time.Millisecond)
 	defer cancel()
 
@@ -151,10 +164,17 @@ func (s *config) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}(c)
 
 	returnNow := func(a *answer, r *dns.Msg) (bool, error) {
-		if len(a.Answer) > 1 || len(a.Answer) <= 0 {
+		AAnswer := make([]dns.RR, 0)
+		for _, v := range a.Answer {
+			if v.Header().Rrtype == dns.TypeA {
+				AAnswer = append(AAnswer, v)
+			}
+		}
+		if len(AAnswer) > 1 || len(AAnswer) <= 0 {
 			return true, nil
-		} else {
-			a := a.Answer[0]
+		}
+		{
+			a := AAnswer[0]
 			if a.Header().Rrtype != dns.TypeA {
 				return true, nil
 			}
@@ -181,22 +201,56 @@ func (s *config) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		}
 	}
 
-	dns64 := func(in *dns.Msg) *dns.Msg {
-		out := in.Copy()
-		out.Answer = make([]dns.RR, 0)
-		for _, v := range in.Answer {
-			if v.Header().Rrtype == dns.TypeA {
-				A, e := v.(*dns.A)
-				if e != true {
-					continue
+	dns64 := func(in *dns.Msg, c context.Context) (out *dns.Msg) {
+		defer func() {
+			if s.Debug {
+				log.Printf("******************\n%s\n", out.String())
+			}
+		}()
+
+		out = in.Copy()
+
+		if AFlag {
+			out.Answer = make([]dns.RR, 0)
+			for _, v := range in.Answer {
+				switch v.Header().Rrtype {
+				case dns.TypeA:
+					A, e := v.(*dns.A)
+					if e != true {
+						continue
+					}
+					contains, err := s.db.Contains(A.A)
+					if err != nil {
+						continue
+					}
+					if contains {
+						out.Answer = append(out.Answer, v)
+					}
+				case dns.TypeCNAME:
+					out.Answer = append(out.Answer, v)
 				}
-				dst := s.Prefix  + A.A.String()
-				v6 := &dns.AAAA{
-					Hdr:  dns.RR_Header{Name: v.Header().Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: v.Header().Ttl},
-					AAAA: net.ParseIP(dst),}
-				out.Answer = append(out.Answer, v6)
-			} else {
-				out.Answer = append(out.Answer, v)
+
+			}
+			return out
+		}
+		if AAAAFlag {
+			out.Question[0].Qtype = dns.TypeAAAA
+			out.Answer = make([]dns.RR, 0)
+			for _, v := range in.Answer {
+				switch v.Header().Rrtype {
+				case dns.TypeA:
+					A, e := v.(*dns.A)
+					if e != true {
+						continue
+					}
+					dst := s.Prefix + A.A.String()
+					v6 := &dns.AAAA{
+						Hdr:  dns.RR_Header{Name: v.Header().Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: v.Header().Ttl},
+						AAAA: net.ParseIP(dst),}
+					out.Answer = append(out.Answer, v6)
+				case dns.TypeCNAME:
+					out.Answer = append(out.Answer, v)
+				}
 			}
 		}
 		return out
@@ -211,7 +265,7 @@ func (s *config) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 				return
 			}
 			if f {
-				err := w.WriteMsg(a.Msg)
+				err := w.WriteMsg(dns64(a.Msg, c))
 				if err != nil {
 					log.Printf("[%s] Return Failed: %s.\n", r.Question[0].String(), err)
 				}
@@ -219,7 +273,7 @@ func (s *config) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			} else {
 				select {
 				case a := <-answerChan:
-					err := w.WriteMsg(dns64(a.Msg))
+					err := w.WriteMsg(dns64(a.Msg, c))
 					if err != nil {
 						log.Printf("[%s] Return Failed: %s.\n", r.Question[0].String(), err)
 					}
@@ -239,13 +293,13 @@ func (s *config) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 					return
 				}
 				if f {
-					err := w.WriteMsg(b.Msg)
+					err := w.WriteMsg(dns64(b.Msg, c))
 					if err != nil {
 						log.Printf("[%s] Return Failed: %s.\n", r.Question[0].String(), err)
 					}
 					return
 				} else {
-					err := w.WriteMsg(dns64(a.Msg))
+					err := w.WriteMsg(dns64(a.Msg, c))
 					if err != nil {
 						log.Printf("[%s] Return Failed: %s.\n", r.Question[0].String(), err)
 					}
@@ -273,12 +327,8 @@ func (s *config) Run() {
 		}
 	}()
 
-	s.tcpServer.Addr = s.ListenAddress
-	s.tcpServer.Net = "tcp"
-	s.tcpServer.ReusePort = true
-	s.tcpServer.Handler = s
 	go func() {
-		err := s.tcpServer.ListenAndServe()
+		err := dns.ListenAndServeTLS(s.TcpListenAddress, s.CertPath, s.KeyPath, s)
 		if err != nil {
 			log.Printf("Server DNS Failed: %s.\n", err)
 			return

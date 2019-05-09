@@ -1,8 +1,12 @@
 {
-	"ListenAddress": "127.0.0.1:53",
-		"ChinaParents": ["114.114.114.114:53"],
-		"OutSeaParents": ["101.6.6.6:53"],
-		"IpDatabase": "./chnroutes.txt",
-		"Debug": true,
-		"Prefix": "2001:da8:201:1347:e:ffff:"
+                "ListenAddress": "[127.0.0.1]:53",
+                "TcpListenAddress": "[222.29.47.196]:853",
+                "ChinaParents": ["114.114.114.114:53"],
+                "OutSeaParents": ["101.6.6.6:53"],
+                "IpDatabase": "./chnroutes.txt",
+                "Debug": true,
+                "Prefix": "2001:da8:201:1347:e:ffff:",
+                "CertPath": "/etc/ssl/nginx/catofes.com.crt",
+                "KeyPath": "/etc/ssl/nginx/catofes.com.key"
 }
+
